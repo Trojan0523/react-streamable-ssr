@@ -2,8 +2,8 @@
  * @Author: BuXiongYu
  * @Date: 2024-04-28 10:14:54
  * @LastEditors: BuXiongYu
- * @LastEditTime: 2024-04-28 14:43:45
- * @Description: 请填写简介
+ * @LastEditTime: 2024-04-28 15:28:07
+ * @Description: ssr entry
  */
 import fs from 'node:fs/promises'
 import express from 'express'
@@ -13,15 +13,32 @@ import { createServer as createViteServer } from 'vite'
 
 const app = express()
 
-const vite = await createViteServer({
-    server: { middlewareMode: true },
-    appType: 'custom',
-    base: '/',
-})
+const isProduction = process.env.NODE_ENV === 'production'
 
-const ssrManifest = undefined
+// Cached production assets
+const templateHtml = isProduction
+  ? await fs.readFile('./dist/client/index.html', 'utf-8')
+  : ''
+const ssrManifest = isProduction
+  ? await fs.readFile('./dist/client/.vite/ssr-manifest.json', 'utf-8')
+  : undefined
 
-app.use(vite.middlewares)
+let vite
+
+if (!isProduction) {
+    vite = await createViteServer({
+        server: { middlewareMode: true },
+        appType: 'custom',
+        base: '/'
+    })
+    app.use(vite.middlewares)
+} else {
+    const compression = (await import('compression')).default
+    const sirv = (await import('sirv')).default
+    app.use(compression())
+    app.use('/', sirv('./dist/client', { extensions: [] }))
+}
+
 
 app.use('*', async (req, res, next) => {
         // server index.html. also handle some static assets
@@ -30,10 +47,16 @@ app.use('*', async (req, res, next) => {
         try {
             let template
             let render
-            template = await fs.readFile('./index.html', 'utf-8')
-            template = await vite.transformIndexHtml(url, template)
-            // TODO: 机器分离，远端请求模块也是可以的。用 ViteRuntime 创建运行环境
-            render = (await vite.ssrLoadModule('/src/entry.server.tsx')).render
+            if (!isProduction) {
+                // Always read fresh template in development
+                template = await fs.readFile('./index.html', 'utf-8')
+                template = await vite.transformIndexHtml(url, template)
+                // TODO: 机器分离，远端请求模块也是可以的。用 ViteRuntime 创建运行环境
+                render = (await vite.ssrLoadModule('/src/entry.server.tsx')).render
+            } else {
+                template = templateHtml
+                render = (await import('./dist/server/entry.server.js')).render
+            }
             let didError = false
             // TODO, 假设这里用的 api不是 react renderToPipeableStreamOptions ，直接 return string, 那就简单多了
             const { pipe, abort } = render(url, ssrManifest, {
